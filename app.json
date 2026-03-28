@@ -1,0 +1,26 @@
+{
+  "id": "e6f4370d-f063-4f9e-a0e0-c11c1d0f5087",
+  "name": "pwn",
+  "publisher": "pwn",
+  "version": "1.0.0.0",
+  "brief": "pwn",
+  "description": "pwn",
+  "privacyStatement": "",
+  "EULA": "",
+  "help": "",
+  "url": "",
+  "logo": "",
+  "dependencies": [],
+  "screenshots": [],
+  "platform": "22.0.0.0",
+  "application": "22.0.0.0",
+  "idRanges": [
+    {
+      "from": 50100,
+      "to": 50149
+    }
+  ],
+  "contextSensitiveHelpUrl": "",
+  "showMyCode": true,
+  "runtime": "11.0"
+}
