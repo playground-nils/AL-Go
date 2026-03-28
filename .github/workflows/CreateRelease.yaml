@@ -1,39 +1,42 @@
 name: ' Create release'
-run-name: "Create release - Version ${{ inputs.tag }}"
-
-on:
+run-name: Create release - Version ${{ inputs.tag }}
+'on':
   workflow_dispatch:
     inputs:
       appVersion:
         description: App version to promote to release (default is latest)
         required: false
-        default: 'latest'
+        default: latest
       name:
         description: Name of this release
         required: true
         default: ''
       tag:
-        description: Tag of this release (needs to be semantic version string https://semver.org, ex. 1.0.0)
+        description: Tag of this release (needs to be semantic version string https://semver.org,
+          ex. 1.0.0)
         required: true
         default: ''
       releaseType:
         description: Release, prerelease or draft?
         type: choice
         options:
-          - Release
-          - Prerelease
-          - Draft
+        - Release
+        - Prerelease
+        - Draft
         default: Release
       createReleaseBranch:
         description: Create Release Branch?
         type: boolean
         default: false
       releaseBranchPrefix:
-        description: The prefix for the release branch. Used only if 'Create Release Branch?' is checked.
+        description: The prefix for the release branch. Used only if 'Create Release
+          Branch?' is checked.
         type: string
         default: release/
       updateVersionNumber:
-        description: New Version Number in main branch. Use Major.Minor (optionally add .Build for versioningstrategy 3) for absolute change, or +1, +0.1 (or +0.0.1 for versioningstrategy 3) incremental change.
+        description: New Version Number in main branch. Use Major.Minor (optionally
+          add .Build for versioningstrategy 3) for absolute change, or +1, +0.1 (or
+          +0.0.1 for versioningstrategy 3) incremental change.
         required: false
         default: ''
       skipUpdatingDependencies:
@@ -48,27 +51,22 @@ on:
         description: Use GhTokenWorkflow for PR/Commit?
         type: boolean
         default: false
-
 permissions:
   actions: read
   contents: write
   id-token: write
   pull-requests: write
-
 concurrency: release
-
 defaults:
   run:
     shell: powershell
-
 env:
   ALGoOrgSettings: ${{ vars.ALGoOrgSettings }}
   ALGoRepoSettings: ${{ vars.ALGoRepoSettings }}
-
 jobs:
   CreateRelease:
-    needs: [ ]
-    runs-on: [ self-hosted ]
+    needs: []
+    runs-on: ubuntu-latest
     outputs:
       artifacts: ${{ steps.analyzeartifacts.outputs.artifacts }}
       releaseId: ${{ steps.createrelease.outputs.releaseId }}
@@ -76,316 +74,267 @@ jobs:
       releaseVersion: ${{ steps.createreleasenotes.outputs.releaseVersion }}
       telemetryScopeJson: ${{ steps.init.outputs.telemetryScopeJson }}
     steps:
-      - name: Dump Workflow Information
-        uses: ARQUICONSULT-ES/AL-Go-Actions/DumpWorkflowInfo@v6.3
-        with:
-          shell: powershell
-
-      - name: Checkout
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-
-      - name: Initialize the workflow
-        id: init
-        uses: ARQUICONSULT-ES/AL-Go-Actions/WorkflowInitialize@v6.3
-        with:
-          shell: powershell
-
-      - name: Read settings
-        id: ReadSettings
-        uses: ARQUICONSULT-ES/AL-Go-Actions/ReadSettings@v6.3
-        with:
-          shell: powershell
-          get: templateUrl,repoName,type,powerPlatformSolutionFolder
-
-      - name: Read secrets
-        id: ReadSecrets
-        uses: ARQUICONSULT-ES/AL-Go-Actions/ReadSecrets@v6.3
-        with:
-          shell: powershell
-          gitHubSecrets: ${{ toJson(secrets) }}
-          getSecrets: 'TokenForPush'
-          useGhTokenWorkflowForPush: '${{ github.event.inputs.useGhTokenWorkflow }}'
-
-      - name: Determine Projects
-        id: determineProjects
-        uses: ARQUICONSULT-ES/AL-Go-Actions/DetermineProjectsToBuild@v6.3
-        with:
-          shell: powershell
-
-      - name: Check for updates to AL-Go system files
-        uses: ARQUICONSULT-ES/AL-Go-Actions/CheckForUpdates@v6.3
-        with:
-          shell: powershell
-          templateUrl: ${{ env.templateUrl }}
-          downloadLatest: true
-
-      - name: Analyze Artifacts
-        id: analyzeartifacts
-        env:
-          _appVersion: ${{ github.event.inputs.appVersion }}
-        run: |
-          $errorActionPreference = "Stop"; $ProgressPreference = "SilentlyContinue"; Set-StrictMode -Version 2.0
-          $projects = '${{ steps.determineProjects.outputs.ProjectsJson }}' | ConvertFrom-Json
-          Write-Host "projects:"
-          $projects | ForEach-Object { Write-Host "- $_" }
-          if ($env:type -eq "PTE" -and $env:powerPlatformSolutionFolder -ne "") {
-            Write-Host "PowerPlatformSolution:"
-            Write-Host "- $($env:powerPlatformSolutionFolder)"
-            $projects += @($env:powerPlatformSolutionFolder)
-          }
-          $include = @()
-          $sha = ''
-          $allArtifacts = @()
-          $page = 1
-          $headers = @{
-            "Authorization" = "token ${{ github.token }}"
-            "X-GitHub-Api-Version" = "2022-11-28"
-            "Accept" = "application/vnd.github+json; charset=utf-8"
-          }
-          do {
-            $repoArtifacts = Invoke-RestMethod -UseBasicParsing -Headers $headers -Uri "$($ENV:GITHUB_API_URL)/repos/$($ENV:GITHUB_REPOSITORY)/actions/artifacts?per_page=100&page=$page"
-            $allArtifacts += $repoArtifacts.Artifacts | Where-Object { !$_.expired }
-            $page++
-          }
-          while ($repoArtifacts.Artifacts.Count -gt 0)
-          Write-Host "Repo Artifacts count: $($repoArtifacts.total_count)"
-          Write-Host "Downloaded Artifacts count: $($allArtifacts.Count)"
-          $projects | ForEach-Object {
-            $thisProject = $_
-            if ($thisProject -and ($thisProject -ne '.')) {
-              $project = $thisProject.Replace('\','_').Replace('/','_')
-            }
-            else {
-              $project = $env:repoName
-            }
-            $refname = "$ENV:GITHUB_REF_NAME".Replace('/','_')
-            Write-Host "Analyzing artifacts for project $project"
-            $appVersion = "$env:_appVersion"
-            if ($appVersion -eq "latest") {
-              Write-Host "Grab latest"
-              $artifact = $allArtifacts | Where-Object { $_.name -like "$project-$refname-Apps-*" -or $_.name -like "$project-$refname-PowerPlatformSolution-*" } | Select-Object -First 1
-            }
-            else {
-              Write-Host "Search for $project-$refname-Apps-$appVersion or $project-$refname-PowerPlatformSolution-$appVersion"
-              $artifact = $allArtifacts | Where-Object { $_.name -eq "$project-$refname-Apps-$appVersion"-or $_.name -eq "$project-$refname-PowerPlatformSolution-$appVersion" } | Select-Object -First 1
-            }
-            if ($artifact) {
-              $startIndex = $artifact.name.LastIndexOf('-') + 1
-              $artifactsVersion = $artifact.name.SubString($startIndex)
-            }
-            else {
-              Write-Host "::Error::No artifacts found for this project"
-              exit 1
-            }
-            if ($sha) {
-              if ($artifact.workflow_run.head_sha -ne $sha) {
-                Write-Host "::Error::The build selected for release doesn't contain all projects. Please rebuild all projects by manually running the CI/CD workflow and recreate the release."
-                throw "The build selected for release doesn't contain all projects. Please rebuild all projects by manually running the CI/CD workflow and recreate the release."
-              }
-            }
-            else {
-              $sha = $artifact.workflow_run.head_sha
-            }
-
-            Write-host "Looking for $project-$refname-Apps-$artifactsVersion or $project-$refname-TestApps-$artifactsVersion or $project-$refname-Dependencies-$artifactsVersion or $project-$refname-PowerPlatformSolution-$artifactsVersion"
-            $allArtifacts | Where-Object { ($_.name -like "$project-$refname-Apps-$artifactsVersion" -or $_.name -like "$project-$refname-TestApps-$artifactsVersion" -or $_.name -like "$project-$refname-Dependencies-$artifactsVersion" -or $_.name -like "$project-$refname-PowerPlatformSolution-$artifactsVersion") } | ForEach-Object {
-              $atype = $_.name.SubString(0,$_.name.Length-$artifactsVersion.Length-1)
-              $atype = $atype.SubString($atype.LastIndexOf('-')+1)
-              $include += $( [ordered]@{ "name" = $_.name; "url" = $_.archive_download_url; "atype" = $atype; "project" = $thisproject } )
-            }
-            if ($include.Count -eq 0) {
-              Write-Host "::Error::No artifacts found for version $artifactsVersion"
-              exit 1
-            }
-          }
-          $artifacts = @{ "include" = $include }
-          $artifactsJson = $artifacts | ConvertTo-Json -compress
-          Add-Content -Encoding UTF8 -Path $env:GITHUB_OUTPUT -Value "artifacts=$artifactsJson"
-          Write-Host "artifacts=$artifactsJson"
-          Add-Content -Encoding UTF8 -Path $env:GITHUB_OUTPUT -Value "commitish=$sha"
-          Write-Host "commitish=$sha"
-
-      - name: Prepare release notes
-        id: createreleasenotes
-        uses: ARQUICONSULT-ES/AL-Go-Actions/CreateReleaseNotes@v6.3
-        with:
-          shell: powershell
-          tag_name: ${{ github.event.inputs.tag }}
-          target_commitish: ${{ steps.analyzeartifacts.outputs.commitish }}
-
-      - name: Create release
-        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7.0.1
-        id: createrelease
-        env:
-          bodyMD: ${{ steps.createreleasenotes.outputs.releaseNotes }}
-        with:
-          github-token: ${{ steps.ReadSecrets.outputs.TokenForPush }}
-          script: |
-            var bodyMD = process.env.bodyMD
-            const createReleaseResponse = await github.rest.repos.createRelease({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              tag_name: '${{ github.event.inputs.tag }}',
-              name: '${{ github.event.inputs.name }}',
-              body: bodyMD.replaceAll('\\n','\n').replaceAll('%0A','\n').replaceAll('%0D','\n').replaceAll('%25','%'),
-              draft: ${{ github.event.inputs.releaseType=='Draft' }},
-              prerelease: ${{ github.event.inputs.releaseType=='Prerelease' }},
-              make_latest: 'legacy',
-              target_commitish: '${{ steps.analyzeartifacts.outputs.commitish }}'
-            });
-            const {
-              data: { id: releaseId, html_url: htmlUrl, upload_url: uploadUrl }
-            } = createReleaseResponse;
-            core.setOutput('releaseId', releaseId);
-
+    - name: Dump Workflow Information
+      uses: ARQUICONSULT-ES/AL-Go-Actions/DumpWorkflowInfo@v6.3
+      with:
+        shell: powershell
+    - name: Checkout
+      uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+    - name: Initialize the workflow
+      id: init
+      uses: ARQUICONSULT-ES/AL-Go-Actions/WorkflowInitialize@v6.3
+      with:
+        shell: powershell
+    - name: Read settings
+      id: ReadSettings
+      uses: ARQUICONSULT-ES/AL-Go-Actions/ReadSettings@v6.3
+      with:
+        shell: powershell
+        get: templateUrl,repoName,type,powerPlatformSolutionFolder
+    - name: Read secrets
+      id: ReadSecrets
+      uses: ARQUICONSULT-ES/AL-Go-Actions/ReadSecrets@v6.3
+      with:
+        shell: powershell
+        gitHubSecrets: ${{ toJson(secrets) }}
+        getSecrets: TokenForPush
+        useGhTokenWorkflowForPush: ${{ github.event.inputs.useGhTokenWorkflow }}
+    - name: Determine Projects
+      id: determineProjects
+      uses: ARQUICONSULT-ES/AL-Go-Actions/DetermineProjectsToBuild@v6.3
+      with:
+        shell: powershell
+    - name: Check for updates to AL-Go system files
+      uses: ARQUICONSULT-ES/AL-Go-Actions/CheckForUpdates@v6.3
+      with:
+        shell: powershell
+        templateUrl: ${{ env.templateUrl }}
+        downloadLatest: true
+    - name: Analyze Artifacts
+      id: analyzeartifacts
+      env:
+        _appVersion: ${{ github.event.inputs.appVersion }}
+      run: "$errorActionPreference = \"Stop\"; $ProgressPreference = \"SilentlyContinue\"\
+        ; Set-StrictMode -Version 2.0\n$projects = '${{ steps.determineProjects.outputs.ProjectsJson\
+        \ }}' | ConvertFrom-Json\nWrite-Host \"projects:\"\n$projects | ForEach-Object\
+        \ { Write-Host \"- $_\" }\nif ($env:type -eq \"PTE\" -and $env:powerPlatformSolutionFolder\
+        \ -ne \"\") {\n  Write-Host \"PowerPlatformSolution:\"\n  Write-Host \"- $($env:powerPlatformSolutionFolder)\"\
+        \n  $projects += @($env:powerPlatformSolutionFolder)\n}\n$include = @()\n\
+        $sha = ''\n$allArtifacts = @()\n$page = 1\n$headers = @{\n  \"Authorization\"\
+        \ = \"token ${{ github.token }}\"\n  \"X-GitHub-Api-Version\" = \"2022-11-28\"\
+        \n  \"Accept\" = \"application/vnd.github+json; charset=utf-8\"\n}\ndo {\n\
+        \  $repoArtifacts = Invoke-RestMethod -UseBasicParsing -Headers $headers -Uri\
+        \ \"$($ENV:GITHUB_API_URL)/repos/$($ENV:GITHUB_REPOSITORY)/actions/artifacts?per_page=100&page=$page\"\
+        \n  $allArtifacts += $repoArtifacts.Artifacts | Where-Object { !$_.expired\
+        \ }\n  $page++\n}\nwhile ($repoArtifacts.Artifacts.Count -gt 0)\nWrite-Host\
+        \ \"Repo Artifacts count: $($repoArtifacts.total_count)\"\nWrite-Host \"Downloaded\
+        \ Artifacts count: $($allArtifacts.Count)\"\n$projects | ForEach-Object {\n\
+        \  $thisProject = $_\n  if ($thisProject -and ($thisProject -ne '.')) {\n\
+        \    $project = $thisProject.Replace('\\','_').Replace('/','_')\n  }\n  else\
+        \ {\n    $project = $env:repoName\n  }\n  $refname = \"$ENV:GITHUB_REF_NAME\"\
+        .Replace('/','_')\n  Write-Host \"Analyzing artifacts for project $project\"\
+        \n  $appVersion = \"$env:_appVersion\"\n  if ($appVersion -eq \"latest\")\
+        \ {\n    Write-Host \"Grab latest\"\n    $artifact = $allArtifacts | Where-Object\
+        \ { $_.name -like \"$project-$refname-Apps-*\" -or $_.name -like \"$project-$refname-PowerPlatformSolution-*\"\
+        \ } | Select-Object -First 1\n  }\n  else {\n    Write-Host \"Search for $project-$refname-Apps-$appVersion\
+        \ or $project-$refname-PowerPlatformSolution-$appVersion\"\n    $artifact\
+        \ = $allArtifacts | Where-Object { $_.name -eq \"$project-$refname-Apps-$appVersion\"\
+        -or $_.name -eq \"$project-$refname-PowerPlatformSolution-$appVersion\" }\
+        \ | Select-Object -First 1\n  }\n  if ($artifact) {\n    $startIndex = $artifact.name.LastIndexOf('-')\
+        \ + 1\n    $artifactsVersion = $artifact.name.SubString($startIndex)\n  }\n\
+        \  else {\n    Write-Host \"::Error::No artifacts found for this project\"\
+        \n    exit 1\n  }\n  if ($sha) {\n    if ($artifact.workflow_run.head_sha\
+        \ -ne $sha) {\n      Write-Host \"::Error::The build selected for release\
+        \ doesn't contain all projects. Please rebuild all projects by manually running\
+        \ the CI/CD workflow and recreate the release.\"\n      throw \"The build\
+        \ selected for release doesn't contain all projects. Please rebuild all projects\
+        \ by manually running the CI/CD workflow and recreate the release.\"\n   \
+        \ }\n  }\n  else {\n    $sha = $artifact.workflow_run.head_sha\n  }\n\n  Write-host\
+        \ \"Looking for $project-$refname-Apps-$artifactsVersion or $project-$refname-TestApps-$artifactsVersion\
+        \ or $project-$refname-Dependencies-$artifactsVersion or $project-$refname-PowerPlatformSolution-$artifactsVersion\"\
+        \n  $allArtifacts | Where-Object { ($_.name -like \"$project-$refname-Apps-$artifactsVersion\"\
+        \ -or $_.name -like \"$project-$refname-TestApps-$artifactsVersion\" -or $_.name\
+        \ -like \"$project-$refname-Dependencies-$artifactsVersion\" -or $_.name -like\
+        \ \"$project-$refname-PowerPlatformSolution-$artifactsVersion\") } | ForEach-Object\
+        \ {\n    $atype = $_.name.SubString(0,$_.name.Length-$artifactsVersion.Length-1)\n\
+        \    $atype = $atype.SubString($atype.LastIndexOf('-')+1)\n    $include +=\
+        \ $( [ordered]@{ \"name\" = $_.name; \"url\" = $_.archive_download_url; \"\
+        atype\" = $atype; \"project\" = $thisproject } )\n  }\n  if ($include.Count\
+        \ -eq 0) {\n    Write-Host \"::Error::No artifacts found for version $artifactsVersion\"\
+        \n    exit 1\n  }\n}\n$artifacts = @{ \"include\" = $include }\n$artifactsJson\
+        \ = $artifacts | ConvertTo-Json -compress\nAdd-Content -Encoding UTF8 -Path\
+        \ $env:GITHUB_OUTPUT -Value \"artifacts=$artifactsJson\"\nWrite-Host \"artifacts=$artifactsJson\"\
+        \nAdd-Content -Encoding UTF8 -Path $env:GITHUB_OUTPUT -Value \"commitish=$sha\"\
+        \nWrite-Host \"commitish=$sha\"\n"
+    - name: Prepare release notes
+      id: createreleasenotes
+      uses: ARQUICONSULT-ES/AL-Go-Actions/CreateReleaseNotes@v6.3
+      with:
+        shell: powershell
+        tag_name: ${{ github.event.inputs.tag }}
+        target_commitish: ${{ steps.analyzeartifacts.outputs.commitish }}
+    - name: Create release
+      uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea
+      id: createrelease
+      env:
+        bodyMD: ${{ steps.createreleasenotes.outputs.releaseNotes }}
+      with:
+        github-token: ${{ steps.ReadSecrets.outputs.TokenForPush }}
+        script: "var bodyMD = process.env.bodyMD\nconst createReleaseResponse = await\
+          \ github.rest.repos.createRelease({\n  owner: context.repo.owner,\n  repo:\
+          \ context.repo.repo,\n  tag_name: '${{ github.event.inputs.tag }}',\n  name:\
+          \ '${{ github.event.inputs.name }}',\n  body: bodyMD.replaceAll('\\\\n','\\\
+          n').replaceAll('%0A','\\n').replaceAll('%0D','\\n').replaceAll('%25','%'),\n\
+          \  draft: ${{ github.event.inputs.releaseType=='Draft' }},\n  prerelease:\
+          \ ${{ github.event.inputs.releaseType=='Prerelease' }},\n  make_latest:\
+          \ 'legacy',\n  target_commitish: '${{ steps.analyzeartifacts.outputs.commitish\
+          \ }}'\n});\nconst {\n  data: { id: releaseId, html_url: htmlUrl, upload_url:\
+          \ uploadUrl }\n} = createReleaseResponse;\ncore.setOutput('releaseId', releaseId);\n"
   UploadArtifacts:
-    needs: [ CreateRelease ]
-    runs-on: [ self-hosted ]
+    needs:
+    - CreateRelease
+    runs-on: ubuntu-latest
     strategy:
       matrix: ${{ fromJson(needs.CreateRelease.outputs.artifacts) }}
       fail-fast: true
     steps:
-      - name: Checkout
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-
-      - name: Read settings
-        uses: ARQUICONSULT-ES/AL-Go-Actions/ReadSettings@v6.3
-        with:
-          shell: powershell
-
-      - name: Read secrets
-        id: ReadSecrets
-        uses: ARQUICONSULT-ES/AL-Go-Actions/ReadSecrets@v6.3
-        with:
-          shell: powershell
-          gitHubSecrets: ${{ toJson(secrets) }}
-          getSecrets: 'nuGetContext,storageContext,TokenForPush'
-          useGhTokenWorkflowForPush: '${{ github.event.inputs.useGhTokenWorkflow }}'
-
-      - name: Download artifact
-        run: |
-          $errorActionPreference = "Stop"; $ProgressPreference = "SilentlyContinue"; Set-StrictMode -Version 2.0
-          Write-Host "Downloading artifact ${{ matrix.name}}"
-          $headers = @{
-            "Authorization" = "token ${{ github.token }}"
-            "X-GitHub-Api-Version" = "2022-11-28"
-            "Accept" = "application/vnd.github+json"
-          }
-          Invoke-WebRequest -UseBasicParsing -Headers $headers -Uri '${{ matrix.url }}' -OutFile '${{ matrix.name }}.zip'
-
-      - name: Upload release artifacts
-        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7.0.1
-        env:
-          releaseId: ${{ needs.createrelease.outputs.releaseId }}
-        with:
-          github-token: ${{ steps.ReadSecrets.outputs.TokenForPush }}
-          script: |
-            const releaseId = process.env.releaseId
-            const assetPath = '${{ matrix.name }}.zip'
-            const assetName = encodeURIComponent('${{ matrix.name }}.zip'.replaceAll(' ','.')).replaceAll('%','')
-            const fs = require('fs');
-            const uploadAssetResponse = await github.rest.repos.uploadReleaseAsset({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              release_id: releaseId,
-              name: assetName,
-              data: fs.readFileSync(assetPath)
-            });
-
-      - name: Deliver to NuGet
-        uses: ARQUICONSULT-ES/AL-Go-Actions/Deliver@v6.3
-        if: ${{ fromJson(steps.ReadSecrets.outputs.Secrets).nuGetContext != '' }}
-        env:
-          Secrets: '${{ steps.ReadSecrets.outputs.Secrets }}'
-        with:
-          shell: powershell
-          type: 'Release'
-          projects: ${{ matrix.project }}
-          deliveryTarget: 'NuGet'
-          artifacts: ${{ github.event.inputs.appVersion }}
-          atypes: 'Apps,TestApps'
-
-      - name: Deliver to Storage
-        uses: ARQUICONSULT-ES/AL-Go-Actions/Deliver@v6.3
-        if: ${{ fromJson(steps.ReadSecrets.outputs.Secrets).storageContext != '' }}
-        env:
-          Secrets: '${{ steps.ReadSecrets.outputs.Secrets }}'
-        with:
-          shell: powershell
-          type: 'Release'
-          projects: ${{ matrix.project }}
-          deliveryTarget: 'Storage'
-          artifacts: ${{ github.event.inputs.appVersion }}
-          atypes: 'Apps,TestApps,Dependencies'
-
+    - name: Checkout
+      uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+    - name: Read settings
+      uses: ARQUICONSULT-ES/AL-Go-Actions/ReadSettings@v6.3
+      with:
+        shell: powershell
+    - name: Read secrets
+      id: ReadSecrets
+      uses: ARQUICONSULT-ES/AL-Go-Actions/ReadSecrets@v6.3
+      with:
+        shell: powershell
+        gitHubSecrets: ${{ toJson(secrets) }}
+        getSecrets: nuGetContext,storageContext,TokenForPush
+        useGhTokenWorkflowForPush: ${{ github.event.inputs.useGhTokenWorkflow }}
+    - name: Download artifact
+      run: "$errorActionPreference = \"Stop\"; $ProgressPreference = \"SilentlyContinue\"\
+        ; Set-StrictMode -Version 2.0\nWrite-Host \"Downloading artifact ${{ matrix.name}}\"\
+        \n$headers = @{\n  \"Authorization\" = \"token ${{ github.token }}\"\n  \"\
+        X-GitHub-Api-Version\" = \"2022-11-28\"\n  \"Accept\" = \"application/vnd.github+json\"\
+        \n}\nInvoke-WebRequest -UseBasicParsing -Headers $headers -Uri '${{ matrix.url\
+        \ }}' -OutFile '${{ matrix.name }}.zip'\n"
+    - name: Upload release artifacts
+      uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea
+      env:
+        releaseId: ${{ needs.createrelease.outputs.releaseId }}
+      with:
+        github-token: ${{ steps.ReadSecrets.outputs.TokenForPush }}
+        script: "const releaseId = process.env.releaseId\nconst assetPath = '${{ matrix.name\
+          \ }}.zip'\nconst assetName = encodeURIComponent('${{ matrix.name }}.zip'.replaceAll('\
+          \ ','.')).replaceAll('%','')\nconst fs = require('fs');\nconst uploadAssetResponse\
+          \ = await github.rest.repos.uploadReleaseAsset({\n  owner: context.repo.owner,\n\
+          \  repo: context.repo.repo,\n  release_id: releaseId,\n  name: assetName,\n\
+          \  data: fs.readFileSync(assetPath)\n});\n"
+    - name: Deliver to NuGet
+      uses: ARQUICONSULT-ES/AL-Go-Actions/Deliver@v6.3
+      if: ${{ fromJson(steps.ReadSecrets.outputs.Secrets).nuGetContext != '' }}
+      env:
+        Secrets: ${{ steps.ReadSecrets.outputs.Secrets }}
+      with:
+        shell: powershell
+        type: Release
+        projects: ${{ matrix.project }}
+        deliveryTarget: NuGet
+        artifacts: ${{ github.event.inputs.appVersion }}
+        atypes: Apps,TestApps
+    - name: Deliver to Storage
+      uses: ARQUICONSULT-ES/AL-Go-Actions/Deliver@v6.3
+      if: ${{ fromJson(steps.ReadSecrets.outputs.Secrets).storageContext != '' }}
+      env:
+        Secrets: ${{ steps.ReadSecrets.outputs.Secrets }}
+      with:
+        shell: powershell
+        type: Release
+        projects: ${{ matrix.project }}
+        deliveryTarget: Storage
+        artifacts: ${{ github.event.inputs.appVersion }}
+        atypes: Apps,TestApps,Dependencies
   CreateReleaseBranch:
-    needs: [ CreateRelease, UploadArtifacts ]
+    needs:
+    - CreateRelease
+    - UploadArtifacts
     if: ${{ github.event.inputs.createReleaseBranch=='true' }}
-    runs-on: [ self-hosted ]
+    runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          ref: '${{ needs.createRelease.outputs.commitish }}'
+    - name: Checkout
+      uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      with:
+        ref: ${{ needs.createRelease.outputs.commitish }}
+    - name: Create Release Branch
+      env:
+        releaseBranchPrefix: ${{ github.event.inputs.releaseBranchPrefix }}
+      run: '$errorActionPreference = "Stop"; $ProgressPreference = "SilentlyContinue";
+        Set-StrictMode -Version 2.0
 
-      - name: Create Release Branch
-        env:
-          releaseBranchPrefix: ${{ github.event.inputs.releaseBranchPrefix }}
-        run: |
-          $errorActionPreference = "Stop"; $ProgressPreference = "SilentlyContinue"; Set-StrictMode -Version 2.0
-          $releaseBranch = "$($env:releaseBranchPrefix)" + "${{ needs.CreateRelease.outputs.releaseVersion }}"
-          Write-Host "Creating release branch $releaseBranch"
-          git checkout -b $releaseBranch
-          git config user.name ${{ github.actor}}
-          git config user.email ${{ github.actor}}@users.noreply.github.com
-          git commit --allow-empty -m "Release branch $releaseBranch"
-          git push origin $releaseBranch
+        $releaseBranch = "$($env:releaseBranchPrefix)" + "${{ needs.CreateRelease.outputs.releaseVersion
+        }}"
 
+        Write-Host "Creating release branch $releaseBranch"
+
+        git checkout -b $releaseBranch
+
+        git config user.name ${{ github.actor}}
+
+        git config user.email ${{ github.actor}}@users.noreply.github.com
+
+        git commit --allow-empty -m "Release branch $releaseBranch"
+
+        git push origin $releaseBranch
+
+        '
   UpdateVersionNumber:
-    needs: [ CreateRelease, UploadArtifacts ]
+    needs:
+    - CreateRelease
+    - UploadArtifacts
     if: ${{ github.event.inputs.updateVersionNumber!='' }}
-    runs-on: [ self-hosted ]
+    runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-
-      - name: Read settings
-        uses: ARQUICONSULT-ES/AL-Go-Actions/ReadSettings@v6.3
-        with:
-          shell: powershell
-
-      - name: Read secrets
-        id: ReadSecrets
-        uses: ARQUICONSULT-ES/AL-Go-Actions/ReadSecrets@v6.3
-        with:
-          shell: powershell
-          gitHubSecrets: ${{ toJson(secrets) }}
-          getSecrets: 'TokenForPush'
-          useGhTokenWorkflowForPush: '${{ github.event.inputs.useGhTokenWorkflow }}'
-
-      - name: Update Version Number
-        uses: ARQUICONSULT-ES/AL-Go-Actions/IncrementVersionNumber@v6.3
-        with:
-          shell: powershell
-          token: ${{ steps.ReadSecrets.outputs.TokenForPush }}
-          versionNumber: ${{ github.event.inputs.updateVersionNumber }}
-          skipUpdatingDependencies: ${{ github.event.inputs.skipUpdatingDependencies }}
-          directCommit: ${{ github.event.inputs.directCommit }}
-
+    - name: Checkout
+      uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+    - name: Read settings
+      uses: ARQUICONSULT-ES/AL-Go-Actions/ReadSettings@v6.3
+      with:
+        shell: powershell
+    - name: Read secrets
+      id: ReadSecrets
+      uses: ARQUICONSULT-ES/AL-Go-Actions/ReadSecrets@v6.3
+      with:
+        shell: powershell
+        gitHubSecrets: ${{ toJson(secrets) }}
+        getSecrets: TokenForPush
+        useGhTokenWorkflowForPush: ${{ github.event.inputs.useGhTokenWorkflow }}
+    - name: Update Version Number
+      uses: ARQUICONSULT-ES/AL-Go-Actions/IncrementVersionNumber@v6.3
+      with:
+        shell: powershell
+        token: ${{ steps.ReadSecrets.outputs.TokenForPush }}
+        versionNumber: ${{ github.event.inputs.updateVersionNumber }}
+        skipUpdatingDependencies: ${{ github.event.inputs.skipUpdatingDependencies
+          }}
+        directCommit: ${{ github.event.inputs.directCommit }}
   PostProcess:
-    needs: [ CreateRelease, UploadArtifacts, CreateReleaseBranch, UpdateVersionNumber ]
+    needs:
+    - CreateRelease
+    - UploadArtifacts
+    - CreateReleaseBranch
+    - UpdateVersionNumber
     if: always()
-    runs-on: [ self-hosted ]
+    runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-
-      - name: Finalize the workflow
-        id: PostProcess
-        uses: ARQUICONSULT-ES/AL-Go-Actions/WorkflowPostProcess@v6.3
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        with:
-          shell: powershell
-          telemetryScopeJson: ${{ needs.CreateRelease.outputs.telemetryScopeJson }}
-          currentJobContext: ${{ toJson(job) }}
+    - name: Checkout
+      uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+    - name: Finalize the workflow
+      id: PostProcess
+      uses: ARQUICONSULT-ES/AL-Go-Actions/WorkflowPostProcess@v6.3
+      env:
+        GITHUB_TOKEN: ${{ github.token }}
+      with:
+        shell: powershell
+        telemetryScopeJson: ${{ needs.CreateRelease.outputs.telemetryScopeJson }}
+        currentJobContext: ${{ toJson(job) }}
